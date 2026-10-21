@@ -1466,6 +1466,55 @@ fn test_sequential_posts() {
 }
 
 #[test]
+fn test_profile_update_changes_fields() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+    let user = Address::generate(&env);
+    let first_token = Address::generate(&env);
+    let updated_token = Address::generate(&env);
+
+    client.set_profile(&user, &String::from_str(&env, "before"), &first_token);
+    client.set_profile(&user, &String::from_str(&env, "after"), &updated_token);
+
+    let profile = client.get_profile(&user).unwrap();
+    assert_eq!(profile.username, String::from_str(&env, "after"));
+    assert_eq!(profile.creator_token, updated_token);
+    assert_eq!(client.get_profile_count(), 1);
+}
+
+#[test]
+fn test_sequential_post_ids() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+    let author = Address::generate(&env);
+
+    let ids = [
+        client.create_post(&author, &String::from_str(&env, "First post")),
+        client.create_post(&author, &String::from_str(&env, "Second post")),
+        client.create_post(&author, &String::from_str(&env, "Third post")),
+    ];
+
+    assert_eq!(ids, [1, 2, 3]);
+    assert_eq!(client.get_post_count(), 3);
+}
+
+#[test]
+fn test_post_stores_ledger_timestamp() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+    let author = Address::generate(&env);
+    let timestamp = 1_725_000_123;
+    env.ledger().set_timestamp(timestamp);
+
+    let post_id = client.create_post(&author, &String::from_str(&env, "Timestamped post"));
+
+    assert_eq!(client.get_post(&post_id).unwrap().timestamp, timestamp);
+}
+
+#[test]
 #[should_panic(expected = "post does not exist: 999")]
 fn test_delete_post_non_existent() {
     let env = Env::default();
@@ -4729,11 +4778,45 @@ fn test_gov_double_vote_panics() {
     let (client, _admin, _) = setup_governance(&env);
 
     let proposer = Address::generate(&env);
+    let creator_token = Address::generate(&env);
+    client.set_profile(&proposer, &String::from_str(&env, "proposer"), &creator_token);
     let proposal_id = client.gov_propose(&proposer, &GovParameter::FeeBps, &500, &None);
 
     let voter = Address::generate(&env);
     client.gov_vote(&voter, &proposal_id, &true);
     client.gov_vote(&voter, &proposal_id, &false);
+}
+
+#[test]
+fn test_vote_overwrite_behavior() {
+    // Governance rejects a second vote. The rejected action leaves the first
+    // vote and both proposal counters unchanged.
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_governance(&env);
+    let proposer = Address::generate(&env);
+    let creator_token = Address::generate(&env);
+    client.set_profile(&proposer, &String::from_str(&env, "proposer"), &creator_token);
+    let proposal_id = client.gov_propose(&proposer, &GovParameter::FeeBps, &500, &None);
+    let voter = Address::generate(&env);
+
+    client.gov_vote(&voter, &proposal_id, &true);
+    assert!(client.try_gov_vote(&voter, &proposal_id, &false).is_err());
+
+    let proposal = client.gov_get_proposal(&proposal_id);
+    assert_eq!(proposal.votes_for, 1);
+    assert_eq!(proposal.votes_against, 0);
+}
+
+#[test]
+#[should_panic(expected = "proposal not found")]
+fn test_vote_on_nonexistent_proposal_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_governance(&env);
+    let voter = Address::generate(&env);
+
+    client.gov_vote(&voter, &999, &true);
 }
 
 #[test]
@@ -4891,7 +4974,7 @@ fn test_migrate_follow_graph_rejects_oversized_batch() {
 }
 
 #[test]
-fn test_duplicate_follow_is_idempotent() {
+fn test_follow_is_idempotent() {
     // Calling follow(A, B) twice must not increment FollowersCount/FollowingCount
     // beyond 1, and must not create a second index entry for the same edge.
     let env = Env::default();
